@@ -11,17 +11,27 @@ app = Flask(__name__)
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 CLIENT_ID = os.getenv("STRIPE_CLIENT_ID")
 PUBLISHABLE_KEY = os.getenv("STRIPE_PUBLISHABLE_KEY")
-DOMAIN = os.getenv("DOMAIN") or "http://localhost:5000"
+DOMAIN = os.getenv("DOMAIN") or "http://127.0.0.1:5000"
 # print("Stripe Key:", stripe.api_key)
 
 # Create connected account
-account = stripe.Account.create(type="express")
+account = stripe.Account.create(
+    type="express",
+    country="CA",
+    capabilities={
+        "card_payments": {"requested": True},
+        "transfers": {"requested": True}
+    },
+    business_type="individual"
+)
+
+
 account_id = account.id  # ✅ Correct way
 
 account_link = stripe.AccountLink.create(
     account=account.id,
-    refresh_url="http://localhost:5000/reauth",
-    return_url="http://localhost:5000/return",
+    refresh_url="http://127.0.0.1:5000/reauth",
+    return_url="http://127.0.0.1:5000/return",
     type="account_onboarding",
 )
 # print("Send user to:", account_link.url)
@@ -49,30 +59,45 @@ PRODUCTS = {
 def home():
     return render_template("index.html", products=PRODUCTS)
 
-
-# Onboarding vendor page 
+# Onboarding vendor page
 @app.route("/onboard-vendor/<vendor_id>")
 def onboard_vendor(vendor_id):
+    account = stripe.Account.create(
+        type="express",
+        capabilities={
+            "transfers": {"requested": True}
+        }
+    )
+    VENDORS[vendor_id] = account.id
+
     account_link = stripe.AccountLink.create(
         account=account.id,
         refresh_url=f"{DOMAIN}/onboard-vendor/{vendor_id}",
         return_url=f"{DOMAIN}/vendor-onboarded/{vendor_id}",
         type="account_onboarding",
     )
-    VENDORS[vendor_id] = account_link["account"]
     return redirect(account_link["url"])
 
-# Vendor onboarded page 
+
+# Vendor onboarded confirmation page
 @app.route("/vendor-onboarded/<vendor_id>")
 def vendor_onboarded(vendor_id):
-    return f"Vendor {vendor_id} onboarded with account ID: {VENDORS[vendor_id]}"
+    return f"Vendor {vendor_id} onboarded with Stripe Account ID: {VENDORS[vendor_id]}"
 
-# Buy product page 
+# Buy product page
 @app.route("/buy/<product_id>", methods=["GET"])
 def buy(product_id):
-    product = PRODUCTS[product_id]
-    vendor_stripe_id = VENDORS[product["vendor_id"]]
-    # Create checkout session 
+    product = PRODUCTS.get(product_id)
+    if not product:
+        return "Product not found", 404
+
+    vendor_id = product["vendor_id"]
+    vendor_stripe_id = VENDORS.get(vendor_id)
+
+    if not vendor_stripe_id:
+        return f"Vendor {vendor_id} not onboarded yet.", 400
+
+    # Create Stripe Checkout session
     session = stripe.checkout.Session.create(
         payment_method_types=["card"],
         line_items=[{
@@ -87,17 +112,17 @@ def buy(product_id):
         }],
         mode='payment',
         payment_intent_data={
-            'application_fee_amount': int(product["price"] * 0.1),
-            # 'transfer_data': {
-            #     'destination': vendor_stripe_id,
-            # },
+            'application_fee_amount': int(product["price"] * 0.10),  # 10% platform fee
+            'transfer_data': {
+                'destination': vendor_stripe_id,
+            },
         },
         success_url=DOMAIN + "/success",
         cancel_url=DOMAIN + "/cancel",
     )
     return redirect(session.url, code=303)
 
-# Webhook for order tracking 
+# Stripe webhook to track payments
 @app.route("/webhook", methods=["POST"])
 def webhook():
     payload = request.data
@@ -112,19 +137,18 @@ def webhook():
         return "Invalid signature", 400
 
     if event["type"] == "checkout.session.completed":
-        print("Payment succeeded!", event["data"]["object"])
+        session = event["data"]["object"]
+        print("✅ Payment succeeded for session:", session["id"])
 
     return "", 200
 
-# Success page 
 @app.route("/success")
 def success():
-    return "Payment completed!"
+    return "✅ Payment completed successfully!"
 
-# Cancel page 
 @app.route("/cancel")
 def cancel():
-    return "Payment canceled."
+    return "❌ Payment canceled."
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(port=5000, debug=True)
