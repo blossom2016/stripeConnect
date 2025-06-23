@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Marketplace</title>
+</head>
+<body>
+    <h1>Products</h1>
+    <ul>
+        {% for id, product in products.items() %}
+        <li>
+            {{ product.name }} - ${{ product.price / 100 }}
+            <a href="/buy/{{ id }}">Buy</a>
+        </li>
+        {% endfor %}
+    </ul>
+</body>
+</html>
