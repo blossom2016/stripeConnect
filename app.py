@@ -1,7 +1,9 @@
 from flask import Flask, request, redirect, jsonify, render_template
 import stripe
 import os
+import requests
 from dotenv import load_dotenv
+from datetime import datetime
 
 load_dotenv()
 
@@ -12,10 +14,31 @@ stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 CLIENT_ID = os.getenv("STRIPE_CLIENT_ID")
 PUBLISHABLE_KEY = os.getenv("STRIPE_PUBLISHABLE_KEY")
 DOMAIN = os.getenv("DOMAIN") or "http://127.0.0.1:5000"
+SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
 # print("Stripe Key:", stripe.api_key)
 
 # Use your specific account ID
 account_id = "acct_1RdH2lP0dISrUx8n"
+
+def send_slack_notification(message):
+    """Send notification to Slack channel"""
+    if not SLACK_WEBHOOK_URL:
+        print("Slack webhook URL not configured")
+        return
+    
+    payload = {
+        "text": message,
+        "username": "Stripe Payment Bot",
+        "icon_emoji": ":money_with_wings:"
+    }
+    
+    try:
+        response = requests.post(SLACK_WEBHOOK_URL, json=payload)
+        response.raise_for_status()
+        print("✅ Slack notification sent successfully")
+    except Exception as e:
+        print(f"❌ Failed to send Slack notification: {str(e)}")
 
 account_link = stripe.AccountLink.create(
     account=account_id,
@@ -112,23 +135,58 @@ def buy(product_id):
 
 # Stripe webhook to track payments
 @app.route("/webhook", methods=["POST"])
-def webhook():
+def stripe_webhook():
+    print("🔔 Webhook received!")
+    
     payload = request.data
-    sig_header = request.headers.get('Stripe-Signature')
-    endpoint_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
+    sig_header = request.headers.get("Stripe-Signature")
+    
+    # Use the webhook secret from Stripe CLI
+    webhook_secret = "whsec_59d5442ef468a768b07995916b789e033f0fe1ff1ec2f90b7d85a447c8906489"
+    
+    print(f"🔑 Using webhook secret: {webhook_secret[:20]}...")
+    print(f"📝 Payload length: {len(payload)}")
+    print(f"🔐 Signature header: {sig_header[:50]}...")
 
     try:
-        event = stripe.Webhook.construct_event(payload, sig_header, endpoint_secret)
-    except ValueError:
-        return "Invalid payload", 400
-    except stripe.error.SignatureVerificationError:
-        return "Invalid signature", 400
+        event = stripe.Webhook.construct_event(
+            payload, sig_header, webhook_secret
+        )
+        print(f"✅ Webhook verified! Event type: {event['type']}")
+    except ValueError as e:
+        print(f"❌ Invalid payload: {e}")
+        return jsonify(success=False, error="Invalid payload"), 400
+    except stripe.error.SignatureVerificationError as e:
+        print(f"❌ Invalid signature: {e}")
+        return jsonify(success=False, error="Invalid signature"), 400
+    except Exception as e:
+        print(f"❌ Unexpected error: {e}")
+        return jsonify(success=False, error=str(e)), 400
 
-    if event["type"] == "checkout.session.completed":
-        session = event["data"]["object"]
-        print("✅ Payment succeeded for session:", session["id"])
+    event_type = event["type"]
+    data = event["data"]["object"]
+    print(f"📊 Processing event: {event_type}")
 
-    return "", 200
+    # Success event
+    if event_type == "checkout.session.completed":
+        customer_email = data.get("customer_details", {}).get("email", "Unknown")
+        amount = data.get("amount_total", 0) / 100
+        print(f"💰 Payment successful: ${amount} from {customer_email}")
+        send_slack_notification(f"✅ Checkout succeeded for {customer_email}. Amount: ${amount:.2f}")
+
+    # Failure-like events (Stripe doesn't have a direct 'failed' event for Checkout)
+    elif event_type == "checkout.session.expired":
+        print("⏰ Checkout session expired")
+        send_slack_notification("⚠️ Checkout session expired — user did not complete payment.")
+
+    elif event_type == "payment_intent.payment_failed":
+        error_message = data.get("last_payment_error", {}).get("message", "Unknown error")
+        print(f"❌ Payment failed: {error_message}")
+        send_slack_notification(f"❌ Payment failed: {error_message}")
+    else:
+        print(f"ℹ️ Unhandled event type: {event_type}")
+
+    return jsonify(success=True)
 
 @app.route("/success")
 def success():
@@ -137,6 +195,18 @@ def success():
 @app.route("/cancel")
 def cancel():
     return "❌ Payment canceled."
+
+@app.route("/test-slack")
+def test_slack():
+    """Test endpoint to verify Slack notifications work"""
+    test_message = """
+🧪 *Test Notification*
+• This is a test message from your Stripe Connect app
+• Time: """ + str(datetime.now()) + """
+• Status: Testing Slack integration
+    """
+    send_slack_notification(test_message)
+    return "Test Slack notification sent! Check your Slack channel."
 
 if __name__ == "__main__":
     app.run(port=5000, debug=True)

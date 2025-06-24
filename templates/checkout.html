@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Vendor Checkout</title>
+  <script src="https://js.stripe.com/v3/"></script>
+</head>
+<body>
+  <h2>Pay Vendor</h2>
+  <form id="payment-form">
+    <input type="hidden" id="vendor_id" value="v3">
+    <button type="submit" id="submit">Pay $50</button>
+    <div id="card-element"></div>
+    <div id="payment-result"></div>
+  </form>
+
+  <script>
+    const stripe = Stripe("{{ key }}");
+
+    fetch("/create-payment-intent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ amount: 5000, vendor_id: "v3" }),
+    })
+    .then(res => res.json())
+    .then(({ clientSecret }) => {
+      const elements = stripe.elements();
+      const card = elements.create("card");
+      card.mount("#card-element");
+
+      const form = document.getElementById("payment-form");
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const result = await stripe.confirmCardPayment(clientSecret, {
+          payment_method: { card: card }
+        });
+        document.getElementById("payment-result").textContent = result.error ? result.error.message : "Payment successful!";
+      });
+    });
+  </script>
+</body>
+</html>
